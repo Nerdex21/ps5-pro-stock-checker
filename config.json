@@ -3,8 +3,8 @@
   "retailers": {
     "bestbuy": {
       "enabled": true,
-      "skus": [],
-      "_nota": "Con skus vacio busca 'PlayStation 5 Pro console' automaticamente via la API. Para maxima precision corre: python checker.py --find-bestbuy-sku y pega el SKU aca."
+      "urls": [],
+      "_nota": "Pega la URL completa del producto en bestbuy.com (https://www.bestbuy.com/site/.../XXXXXXX.p)."
     },
     "target": {
       "enabled": true,

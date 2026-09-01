@@ -4,18 +4,19 @@ Checker de stock de la PS5 Pro en minoristas de EE.UU.
 Corre cada hora (via GitHub Actions) y avisa por Telegram cuando encuentra stock.
 
 Fuentes:
-- Best Buy: API oficial (confiable). Requiere BESTBUY_API_KEY.
 - Target: RedSky API (semi-oficial).
-- Walmart / Amazon / GameStop / PlayStation Direct: scraping best-effort.
+- Best Buy / Walmart / Amazon / GameStop / PlayStation Direct: scraping best-effort.
   Ojo: desde IPs de datacenter (GitHub Actions) estos suelen estar bloqueados;
   en ese caso el checker reporta UNKNOWN (❔), NO "sin stock", asi no te da
   un falso negativo ni te spamea.
 
+Las alertas se mandan a TODOS los chats listados en TELEGRAM_CHAT_IDS
+(separados por coma, ej: "123456789,-100987654321").
+
 Uso:
   python checker.py                     # corre todos los chequeos y avisa por Telegram
-  python checker.py --test-telegram     # manda un mensaje de prueba a tu chat
+  python checker.py --test-telegram     # manda un mensaje de prueba a todos los chats
   python checker.py --get-chat-id       # imprime los chat IDs que le hablaron al bot
-  python checker.py --find-bestbuy-sku  # busca el SKU de la PS5 Pro en la API de Best Buy
   python checker.py --once-report       # corre y solo imprime, sin avisar (debug)
 """
 import os
@@ -86,73 +87,33 @@ def tg_request(method, params):
     return r.json()
 
 
+def get_chat_ids():
+    """Lista de chat IDs desde TELEGRAM_CHAT_IDS (separados por coma).
+    Acepta tambien TELEGRAM_CHAT_ID (singular) por compatibilidad."""
+    raw = (os.environ.get("TELEGRAM_CHAT_IDS", "").strip()
+           or os.environ.get("TELEGRAM_CHAT_ID", "").strip())
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
 def send_telegram(text):
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not chat_id:
-        log("WARN Falta TELEGRAM_CHAT_ID; no puedo enviar.")
+    chat_ids = get_chat_ids()
+    if not chat_ids:
+        log("WARN Falta TELEGRAM_CHAT_IDS; no puedo enviar.")
         return False
-    try:
-        tg_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "false",
-        })
-        return True
-    except Exception as e:  # noqa: BLE001
-        log(f"ERROR enviando Telegram: {e}")
-        return False
-
-
-# ---------------- Best Buy (API oficial) ----------------
-def bestbuy_fetch(selector, api_key, pagesize=5):
-    url = (f"https://api.bestbuy.com/v1/{selector}?apiKey={api_key}&format=json"
-           "&show=sku,name,orderable,onlineAvailability,url,salePrice,regularPrice"
-           f"&pageSize={pagesize}")
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=25)
-    if r.status_code == 403:
-        raise RuntimeError("API 403 (key invalida o rate limit)")
-    r.raise_for_status()
-    return r.json().get("products", [])
-
-
-def check_bestbuy(cfg):
-    api_key = os.environ.get("BESTBUY_API_KEY", "").strip()
-    if not api_key:
-        return [result("Best Buy", "PS5 Pro", UNKNOWN, "", "Falta BESTBUY_API_KEY")]
-
-    skus = cfg.get("skus", [])
-    products = []
-    try:
-        if skus:
-            for s in skus:
-                products += bestbuy_fetch(f"products(sku={s})", api_key)
-        else:
-            # Sin SKU configurado: busco la consola por nombre (zero-config).
-            q = "(search=playstation)&(search=5)&(search=pro)&(search=console)&salePrice>400"
-            products += bestbuy_fetch(f"products({q})", api_key, pagesize=10)
-    except Exception as e:  # noqa: BLE001
-        return [result("Best Buy", "PS5 Pro", UNKNOWN, "", f"error: {e}")]
-
-    results = []
-    for p in products:
-        name = p.get("name", "")
-        if not skus:  # filtro para descartar accesorios en modo busqueda
-            low = name.lower()
-            if "pro" not in low or "playstation 5" not in low:
-                continue
-        orderable = (p.get("orderable") or "").strip()
-        online = p.get("onlineAvailability")
-        in_stock = orderable.lower() == "available" and online is not False
-        price = p.get("salePrice") or p.get("regularPrice")
-        detail = f"orderable={orderable or 'n/a'}" + (f", ${price}" if price else "")
-        results.append(result("Best Buy", name or f"SKU {p.get('sku')}",
-                              IN_STOCK if in_stock else OUT_OF_STOCK,
-                              p.get("url", ""), detail))
-    if not results:
-        results.append(result("Best Buy", "PS5 Pro", UNKNOWN, "",
-                              "no encontre la consola (verifica SKU/busqueda)"))
-    return results
+    ok = 0
+    for chat_id in chat_ids:
+        try:
+            tg_request("sendMessage", {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "false",
+            })
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            log(f"ERROR enviando Telegram a {chat_id}: {e}")
+    log(f"Telegram: enviado a {ok}/{len(chat_ids)} chat(s).")
+    return ok > 0
 
 
 # ---------------- Target (RedSky API) ----------------
@@ -245,7 +206,7 @@ def make_html_checker(display_name):
 
 
 CHECKERS = {
-    "bestbuy": check_bestbuy,
+    "bestbuy": make_html_checker("Best Buy"),
     "target": check_target,
     "walmart": make_html_checker("Walmart"),
     "amazon": make_html_checker("Amazon"),
@@ -286,25 +247,6 @@ def cmd_get_chat_id():
         print(f"chat_id={cid}  ({who})")
 
 
-def cmd_find_bestbuy_sku():
-    api_key = os.environ.get("BESTBUY_API_KEY", "").strip()
-    if not api_key:
-        print("Falta BESTBUY_API_KEY en el entorno.")
-        return
-    q = "(search=playstation)&(search=5)&(search=pro)&(search=console)&salePrice>400"
-    try:
-        products = bestbuy_fetch(f"products({q})", api_key, pagesize=20)
-    except Exception as e:  # noqa: BLE001
-        print(f"Error consultando Best Buy: {e}")
-        return
-    if not products:
-        print("No encontre candidatos. Proba buscar el SKU a mano en bestbuy.com.")
-        return
-    for p in products:
-        print(f"SKU {p['sku']}  ${p.get('salePrice')}  orderable={p.get('orderable')}  {p['name']}")
-    print("\nPega el SKU de la consola (no accesorios) en config.json -> retailers.bestbuy.skus")
-
-
 # ---------------- Main ----------------
 def main():
     args = sys.argv[1:]
@@ -318,10 +260,6 @@ def main():
 
     if "--get-chat-id" in args:
         cmd_get_chat_id()
-        return
-
-    if "--find-bestbuy-sku" in args:
-        cmd_find_bestbuy_sku()
         return
 
     report_only = "--once-report" in args

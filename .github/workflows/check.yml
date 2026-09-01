@@ -29,8 +29,7 @@ jobs:
       - name: Run checker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BESTBUY_API_KEY: ${{ secrets.BESTBUY_API_KEY }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
         run: python checker.py
 
       - name: Persist state
