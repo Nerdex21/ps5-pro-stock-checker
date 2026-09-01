@@ -6,14 +6,20 @@ gratis en **GitHub Actions** (sin servidor, sin tu PC prendida).
 
 ## Cómo funciona
 
-| Minorista | Método | Confiabilidad |
-|---|---|---|
-| **Target** | RedSky API (semi-oficial) | Media |
-| **Best Buy / Walmart / Amazon / GameStop / PS Direct** | Scraping best-effort | Baja desde la nube* |
+Todo se baja con [curl_cffi](https://github.com/lexiforest/curl_cffi) imitando
+la huella TLS de Chrome real (pasa varios anti-bots que bloquean `requests`).
 
-\* Estos sitios bloquean IPs de datacenter. Cuando el chequeo es bloqueado, el
-checker lo marca `UNKNOWN` (❔) en el log — **nunca** lo reporta como "sin stock"
-ni manda falsas alarmas.
+| Minorista | Señal | Confiabilidad |
+|---|---|---|
+| **Walmart** | `availabilityStatus` del JSON `__NEXT_DATA__` | ⭐ Alta |
+| **Newegg** | API interna `ProductRealtime` (`Instock`) | ⭐ Alta |
+| **Abt / GameStop** | JSON-LD del producto (schema.org) | ⭐ Alta |
+| **PS Direct / Best Buy / Sam's Club / Amazon** | Texto del HTML (prioriza "sin stock") | Media |
+| Target | Deshabilitado (API muerta + shell de JS) | — |
+
+\* Si un sitio bloquea el chequeo (más probable desde las IPs de GitHub
+Actions que desde una casa), se marca `UNKNOWN` (❔) — **nunca** se reporta
+como "sin stock" ni se mandan falsas alarmas.
 
 Avisa cuando un retailer **pasa a tener stock** (y re-avisa cada 6 h si
 sigue disponible, configurable con `recheck_alert_hours`). El estado entre

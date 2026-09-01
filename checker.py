@@ -3,12 +3,17 @@
 Checker de stock de la PS5 Pro en minoristas de EE.UU.
 Corre cada hora (via GitHub Actions) y avisa por Telegram cuando encuentra stock.
 
-Fuentes:
-- Target: RedSky API (semi-oficial).
-- Best Buy / Walmart / Amazon / GameStop / PlayStation Direct: scraping best-effort.
-  Ojo: desde IPs de datacenter (GitHub Actions) estos suelen estar bloqueados;
-  en ese caso el checker reporta UNKNOWN (❔), NO "sin stock", asi no te da
-  un falso negativo ni te spamea.
+Fuentes (de mas a menos confiable):
+- Walmart: availabilityStatus del JSON __NEXT_DATA__ de la pagina.
+- Newegg: API interna ProductRealtime (Instock bool).
+- Sam's Club / Abt: disponibilidad schema.org embebida en la pagina.
+- PlayStation Direct / Amazon: deteccion por texto en el HTML.
+- Best Buy / GameStop: scraping best-effort (suelen bloquear).
+- Target: deshabilitado (su API interna murio y el HTML es un shell de JS).
+
+Todo se baja con curl_cffi imitando la huella TLS de Chrome (pasa varios
+anti-bots). Si una pagina viene bloqueada o sin datos, se reporta UNKNOWN (❔),
+NUNCA "sin stock" — cero falsas alarmas.
 
 Las alertas se mandan a TODOS los chats listados en TELEGRAM_CHAT_IDS
 (separados por coma, ej: "123456789,-100987654321").
@@ -20,11 +25,17 @@ Uso:
   python checker.py --once-report       # corre y solo imprime, sin avisar (debug)
 """
 import os
+import re
 import sys
 import json
 from datetime import datetime, timezone, timedelta
 
 import requests
+
+try:
+    from curl_cffi import requests as cffi_requests
+except ImportError:  # fallback: sin huella de Chrome, mas facil de bloquear
+    cffi_requests = None
 
 # La consola de Windows usa cp1252 por defecto y no banca emojis.
 if hasattr(sys.stdout, "reconfigure"):
@@ -116,54 +127,21 @@ def send_telegram(text):
     return ok > 0
 
 
-# ---------------- Target (RedSky API) ----------------
-def target_pdp(tcin):
-    return f"https://www.target.com/p/-/A-{tcin}"
+# ---------------- Fetch con huella de Chrome ----------------
+def fetch(url, accept="text/html,application/xhtml+xml,*/*;q=0.8", referer=None):
+    """GET con curl_cffi (huella TLS de Chrome real); cae a requests si no esta."""
+    headers = dict(BROWSER_HEADERS, Accept=accept)
+    if referer:
+        headers["Referer"] = referer
+    if cffi_requests is not None:
+        return cffi_requests.get(url, impersonate="chrome", headers={
+            "Accept": accept, **({"Referer": referer} if referer else {}),
+        }, timeout=30)
+    return requests.get(url, headers=headers, timeout=25)
 
 
-def check_target(cfg):
-    results = []
-    key = cfg.get("redsky_key", "")
-    store = str(cfg.get("store_id", ""))
-    zip_ = str(cfg.get("zip", "10001"))
-    for tcin in cfg.get("tcins", []):
-        params = {
-            "key": key, "tcin": str(tcin), "is_bot": "false",
-            "store_id": store, "zip": zip_, "state": "NY",
-            "latitude": "40.71", "longitude": "-74.00",
-            "channel": "WEB", "page": f"/p/A-{tcin}",
-        }
-        try:
-            r = requests.get(
-                "https://redsky.target.com/redsky_aggregations/v1/web/pdp_fulfillment_v1",
-                params=params,
-                headers={"User-Agent": UA, "Accept": "application/json"},
-                timeout=25,
-            )
-            if r.status_code in (403, 429):
-                results.append(result("Target", f"TCIN {tcin}", UNKNOWN,
-                                      target_pdp(tcin), f"HTTP {r.status_code} (bloqueado)"))
-                continue
-            r.raise_for_status()
-            data = r.json()
-            product = ((data.get("data") or {}).get("product") or {})
-            ship = ((product.get("fulfillment") or {}).get("shipping_options") or {})
-            avail = (ship.get("availability_status") or "").upper()
-            if avail in ("IN_STOCK", "LIMITED_STOCK"):
-                status = IN_STOCK
-            elif avail:
-                status = OUT_OF_STOCK
-            else:
-                status = UNKNOWN
-            results.append(result("Target", f"TCIN {tcin}", status,
-                                  target_pdp(tcin), f"shipping={avail or 'n/a'}"))
-        except Exception as e:  # noqa: BLE001
-            results.append(result("Target", f"TCIN {tcin}", UNKNOWN,
-                                  target_pdp(tcin), f"error: {e}"))
-    return results
-
-
-# ---------------- Retailers via scraping HTML (best-effort) ----------------
+# ---------------- Deteccion generica sobre HTML ----------------
+PRODUCT_PATTERNS = ["ps5 pro", "playstation 5 pro", "playstation5 pro", "playstation®5 pro"]
 OUT_PATTERNS = [
     "sold out", "out of stock", "currently unavailable",
     "temporarily out of stock", "coming soon", "notify me when",
@@ -172,43 +150,139 @@ OUT_PATTERNS = [
 IN_PATTERNS = [
     "add to cart", "add to bag", "addtocart", "add-to-cart", "buy now",
 ]
-BLOCK_PATTERNS = [
-    "captcha", "are you a human", "robot or human", "press & hold",
-    "press and hold", "access denied", "unusual traffic",
-    "verify you are", "px-captcha", "enable javascript",
-]
+SCHEMA_IN = {"instock", "limitedavailability", "onlineonly", "preorder"}
+SCHEMA_OUT = {"outofstock", "soldout", "discontinued", "backorder"}
 
 
-def check_one_html(name, url):
+def ldjson_availability(text):
+    """Disponibilidad desde bloques JSON-LD tipo Product (senal estructurada).
+    Devuelve (set de availabilities en minuscula, precio) solo de productos
+    cuyo nombre matchea la PS5 Pro. Ignora menciones sueltas de schema.org
+    en el JS de la pagina (esas dan falsos positivos)."""
+    avails, price = set(), None
+    for block in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>',
+                            text, re.S):
+        try:
+            data = json.loads(block.strip())
+        except Exception:  # noqa: BLE001
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            if not isinstance(item, dict) or item.get("@type") not in ("Product", ["Product"]):
+                continue
+            name = (item.get("name") or "").lower()
+            if name and not any(p in name for p in PRODUCT_PATTERNS):
+                continue
+            offers = item.get("offers") or {}
+            for o in (offers if isinstance(offers, list) else [offers]):
+                a = (o.get("availability") or "").rsplit("/", 1)[-1].lower()
+                if a:
+                    avails.add(a)
+                    price = price or o.get("price")
+    return avails, price
+
+
+def check_one_html(name, url, out_extra=()):
     try:
-        r = requests.get(url, headers=BROWSER_HEADERS, timeout=25)
-        body = r.text.lower()
-        if r.status_code in (403, 429, 503) or any(b in body for b in BLOCK_PATTERNS):
+        r = fetch(url)
+        if r.status_code in (403, 429, 503):
             return result(name, url, UNKNOWN, url, f"bloqueado (HTTP {r.status_code})")
         if r.status_code >= 400:
             return result(name, url, UNKNOWN, url, f"HTTP {r.status_code}")
-        has_out = any(p in body for p in OUT_PATTERNS)
-        has_in = any(p in body for p in IN_PATTERNS)
-        # Priorizo "sin stock" para evitar falsas alarmas (spam).
-        if has_out:
-            return result(name, url, OUT_OF_STOCK, url, "detecto 'sin stock'")
-        if has_in:
-            return result(name, url, IN_STOCK, url, "detecto 'add to cart'")
+        body = r.text.lower()
+
+        # Si la pagina ni menciona el producto es un muro anti-bot o un shell
+        # de JS: no hay senal de stock ahi.
+        if not any(p in body for p in PRODUCT_PATTERNS):
+            return result(name, url, UNKNOWN, url,
+                          "pagina sin datos del producto (bloqueo o shell JS)")
+
+        # 1) Senal estructurada (JSON-LD del producto) si existe: la mas confiable.
+        avails, price = ldjson_availability(r.text)
+        if avails:
+            ins, outs = avails & SCHEMA_IN, avails & SCHEMA_OUT
+            tag = "/".join(sorted(avails)) + (f", ${price}" if price else "")
+            if ins and not outs:
+                return result(name, url, IN_STOCK, url, f"JSON-LD: {tag}")
+            if outs and not ins:
+                return result(name, url, OUT_OF_STOCK, url, f"JSON-LD: {tag}")
+            # mezcla (ofertas nuevas y usadas con distinto estado): sigo con texto
+
+        # 2) Texto. Priorizo "sin stock" para evitar falsas alarmas.
+        out_hit = next((p for p in list(out_extra) + OUT_PATTERNS if p in body), None)
+        if out_hit:
+            return result(name, url, OUT_OF_STOCK, url, f"detecto '{out_hit}'")
+        in_hit = next((p for p in IN_PATTERNS if p in body), None)
+        if in_hit:
+            return result(name, url, IN_STOCK, url, f"detecto '{in_hit}'")
         return result(name, url, UNKNOWN, url, "sin senales claras")
     except Exception as e:  # noqa: BLE001
-        return result(name, url, UNKNOWN, url, f"error: {e}")
+        return result(name, url, UNKNOWN, url, f"error: {str(e)[:120]}")
 
 
 def make_html_checker(display_name):
     def _check(cfg):
-        return [check_one_html(display_name, u) for u in cfg.get("urls", [])]
+        extra = cfg.get("out_extra", [])
+        return [check_one_html(display_name, u, extra) for u in cfg.get("urls", [])]
     return _check
+
+
+# ---------------- Walmart: availabilityStatus del __NEXT_DATA__ ----------------
+def check_walmart(cfg):
+    results = []
+    for url in cfg.get("urls", []):
+        try:
+            r = fetch(url)
+            m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+            if r.status_code == 200 and m:
+                data = json.loads(m.group(1))
+                prod = ((((data.get("props") or {}).get("pageProps") or {})
+                         .get("initialData") or {}).get("data") or {}).get("product") or {}
+                status_raw = (prod.get("availabilityStatus") or "").upper()
+                name = prod.get("name") or url
+                price = ((prod.get("priceInfo") or {}).get("currentPrice") or {}).get("priceString", "")
+                if status_raw:
+                    status = IN_STOCK if status_raw == "IN_STOCK" else OUT_OF_STOCK
+                    detail = f"availabilityStatus={status_raw}" + (f", {price}" if price else "")
+                    results.append(result("Walmart", name, status, url, detail))
+                    continue
+            # sin JSON utilizable: caigo a la deteccion generica
+            results.append(check_one_html("Walmart", url, cfg.get("out_extra", [])))
+        except Exception as e:  # noqa: BLE001
+            results.append(result("Walmart", url, UNKNOWN, url, f"error: {str(e)[:120]}"))
+    return results
+
+
+# ---------------- Newegg: API interna ProductRealtime ----------------
+def check_newegg(cfg):
+    results = []
+    for item in cfg.get("items", []):
+        page = f"https://www.newegg.com/p/{item}"
+        try:
+            r = fetch(f"https://www.newegg.com/product/api/ProductRealtime?ItemNumber={item}",
+                      accept="application/json", referer=page)
+            if r.status_code != 200 or not r.text.strip().startswith("{"):
+                results.append(result("Newegg", item, UNKNOWN, page,
+                                      f"API bloqueada (HTTP {r.status_code})"))
+                continue
+            main = (r.json().get("MainItem") or {})
+            instock = main.get("Instock")
+            if instock is None:
+                results.append(result("Newegg", item, UNKNOWN, page, "API sin campo Instock"))
+                continue
+            results.append(result("Newegg", main.get("Title") or item,
+                                  IN_STOCK if instock else OUT_OF_STOCK,
+                                  page, f"Instock={instock}"))
+        except Exception as e:  # noqa: BLE001
+            results.append(result("Newegg", item, UNKNOWN, page, f"error: {str(e)[:120]}"))
+    return results
 
 
 CHECKERS = {
     "bestbuy": make_html_checker("Best Buy"),
-    "target": check_target,
-    "walmart": make_html_checker("Walmart"),
+    "walmart": check_walmart,
+    "newegg": check_newegg,
+    "samsclub": make_html_checker("Sam's Club"),
+    "abt": make_html_checker("Abt"),
     "amazon": make_html_checker("Amazon"),
     "gamestop": make_html_checker("GameStop"),
     "playstation_direct": make_html_checker("PlayStation Direct"),
