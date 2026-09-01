@@ -1,0 +1,38 @@
+{
+  "recheck_alert_hours": 6,
+  "retailers": {
+    "bestbuy": {
+      "enabled": true,
+      "skus": [],
+      "_nota": "Con skus vacio busca 'PlayStation 5 Pro console' automaticamente via la API. Para maxima precision corre: python checker.py --find-bestbuy-sku y pega el SKU aca."
+    },
+    "target": {
+      "enabled": true,
+      "tcins": [],
+      "store_id": "3991",
+      "zip": "10001",
+      "redsky_key": "9f36aeafbe60771e321a7cc95a78140772ab3e96",
+      "_nota": "Busca el producto en target.com: el TCIN es el numero al final de la URL (/p/-/A-XXXXXXXX). Pega ese numero en tcins."
+    },
+    "walmart": {
+      "enabled": true,
+      "urls": [],
+      "_nota": "Pega la URL completa del producto en walmart.com (https://www.walmart.com/ip/...)."
+    },
+    "amazon": {
+      "enabled": true,
+      "urls": [],
+      "_nota": "Pega la URL del producto (https://www.amazon.com/dp/ASIN)."
+    },
+    "gamestop": {
+      "enabled": true,
+      "urls": [],
+      "_nota": "Pega la URL del producto en gamestop.com."
+    },
+    "playstation_direct": {
+      "enabled": true,
+      "urls": [],
+      "_nota": "Pega la URL del producto en direct.playstation.com."
+    }
+  }
+}

@@ -1,0 +1,46 @@
+name: PS5 Pro stock check
+
+on:
+  schedule:
+    - cron: "7 * * * *" # cada hora (min 7 para esquivar la congestion del minuto 0 en Actions)
+  workflow_dispatch: {} # permite correrlo a mano desde la pestania Actions
+
+permissions:
+  contents: write # para commitear state.json cuando cambia un estado
+
+concurrency:
+  group: stock-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run checker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BESTBUY_API_KEY: ${{ secrets.BESTBUY_API_KEY }}
+        run: python checker.py
+
+      - name: Persist state
+        run: |
+          if ! git diff --quiet state.json; then
+            git config user.name "ps5-stock-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: update stock state [skip ci]"
+            git push
+          else
+            echo "Sin cambios de estado."
+          fi
