@@ -2,7 +2,7 @@ name: PS5 Pro stock check
 
 on:
   schedule:
-    - cron: "7 * * * *" # cada hora (min 7 para esquivar la congestion del minuto 0 en Actions)
+    - cron: "7,37 * * * *" # cada 30 min (min 7 y 37 para esquivar la congestion del minuto 0 en Actions)
   workflow_dispatch: {} # permite correrlo a mano desde la pestania Actions
 
 permissions:

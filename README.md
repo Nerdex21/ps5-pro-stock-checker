@@ -1,6 +1,6 @@
 # 🎮 PS5 Pro Stock Checker
 
-Chequea cada 1 hora el stock de la PS5 Pro en minoristas de EE.UU. y manda un
+Chequea cada 30 minutos el stock de la PS5 Pro en minoristas de EE.UU. y manda un
 mensaje por **Telegram** (a uno o varios chats) cuando aparece stock. Corre
 gratis en **GitHub Actions** (sin servidor, sin tu PC prendida).
 
@@ -15,9 +15,14 @@ gratis en **GitHub Actions** (sin servidor, sin tu PC prendida).
 checker lo marca `UNKNOWN` (❔) en el log — **nunca** lo reporta como "sin stock"
 ni manda falsas alarmas.
 
-Solo avisa cuando un retailer **pasa a tener stock** (y re-avisa cada 6 h si
+Avisa cuando un retailer **pasa a tener stock** (y re-avisa cada 6 h si
 sigue disponible, configurable con `recheck_alert_hours`). El estado entre
 corridas se guarda en `state.json` (el workflow lo commitea solo cuando cambia).
+
+Con `always_notify: true` en `config.json` manda un mensaje en **cada corrida**
+aunque no haya stock ("No stock anywhere") — útil para verificar que los
+mensajes llegan. Cuando confirmes que funciona, ponelo en `false` para que solo
+avise cuando hay stock (si no, son ~48 mensajes por día).
 
 ## Setup (una sola vez, ~10 min)
 

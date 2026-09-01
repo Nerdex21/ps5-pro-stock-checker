@@ -1,5 +1,7 @@
 {
   "recheck_alert_hours": 6,
+  "always_notify": true,
+  "_nota_always_notify": "true = manda mensaje en CADA corrida aunque no haya stock (heartbeat, ~48 msgs/dia con cron de 30 min). Cuando confirmes que llegan bien, ponelo en false.",
   "retailers": {
     "bestbuy": {
       "enabled": true,

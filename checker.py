@@ -313,7 +313,16 @@ def main():
         if send_telegram("\n".join(lines)):
             log(f"Enviadas {len(alerts)} alerta(s) por Telegram.")
     else:
-        log("Sin stock nuevo. No se envian alertas.")
+        log("Sin stock nuevo.")
+        # Heartbeat: con always_notify=true avisa igual aunque no haya stock
+        # (util para verificar que los mensajes llegan; despues poner false).
+        if config.get("always_notify", False):
+            lines = ["\U0001f634 No stock anywhere (por ahora)", ""]
+            for r in results:
+                lines.append(f"{EMOJI.get(r['status'], '?')} {r['retailer']} — {r['detail']}")
+            if not results:
+                lines.append("⚠️ Nada configurado para chequear (config.json sin URLs/TCINs).")
+            send_telegram("\n".join(lines))
 
 
 if __name__ == "__main__":
