@@ -5,36 +5,42 @@
   "retailers": {
     "bestbuy": {
       "enabled": true,
-      "urls": [],
-      "_nota": "Pega la URL completa del producto en bestbuy.com (https://www.bestbuy.com/site/.../XXXXXXX.p)."
+      "urls": [
+        "https://www.bestbuy.com/product/playstation-5-pro-console/JXHQ37TR86/sku/6601524"
+      ]
     },
     "target": {
-      "enabled": true,
-      "tcins": [],
+      "enabled": false,
+      "tcins": ["93620188"],
       "store_id": "3991",
       "zip": "10001",
       "redsky_key": "9f36aeafbe60771e321a7cc95a78140772ab3e96",
-      "_nota": "Busca el producto en target.com: el TCIN es el numero al final de la URL (/p/-/A-XXXXXXXX). Pega ese numero en tcins."
+      "_nota": "Deshabilitado 2026-09: RedSky devuelve 403 (requiere sesion real) y el HTML de target.com es un shell de JS sin datos de stock (daria falsas alertas)."
     },
     "walmart": {
       "enabled": true,
-      "urls": [],
-      "_nota": "Pega la URL completa del producto en walmart.com (https://www.walmart.com/ip/...)."
+      "urls": [
+        "https://www.walmart.com/ip/Sony-PlayStation-5-Pro-Console-PS5-Pro/11839818124"
+      ]
     },
     "amazon": {
       "enabled": true,
-      "urls": [],
-      "_nota": "Pega la URL del producto (https://www.amazon.com/dp/ASIN)."
+      "urls": [
+        "https://www.amazon.com/dp/B0DGY63Z2H",
+        "https://www.amazon.com/dp/B0FTMY4YZ2"
+      ]
     },
     "gamestop": {
       "enabled": true,
-      "urls": [],
-      "_nota": "Pega la URL del producto en gamestop.com."
+      "urls": [
+        "https://www.gamestop.com/consoles-hardware/playstation-5/consoles/products/sony-playstation-5-pro-console/20015604.html"
+      ]
     },
     "playstation_direct": {
       "enabled": true,
-      "urls": [],
-      "_nota": "Pega la URL del producto en direct.playstation.com."
+      "urls": [
+        "https://direct.playstation.com/en-us/buy-consoles/playstation5-pro-console-2-tb"
+      ]
     }
   }
 }
