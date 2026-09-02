@@ -32,12 +32,12 @@
       ]
     },
     "amazon": {
-      "enabled": true,
+      "enabled": false,
       "urls": [
         "https://www.amazon.com/dp/B0DGY63Z2H"
       ],
       "out_extra": ["see all buying options"],
-      "_nota": "'see all buying options' = sin buybox directo (solo resellers 3ros a sobreprecio); lo tratamos como sin stock."
+      "_nota": "Deshabilitado a pedido (rebotaba seguido). Para reactivar: enabled=true. 'see all buying options' = sin buybox directo (solo resellers 3ros a sobreprecio); lo tratamos como sin stock."
     },
     "target": {
       "enabled": false,
