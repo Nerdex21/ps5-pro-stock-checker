@@ -29,6 +29,7 @@ import re
 import sys
 import json
 from datetime import datetime, timezone, timedelta
+from html import unescape
 
 import requests
 
@@ -152,6 +153,50 @@ IN_PATTERNS = [
 ]
 SCHEMA_IN = {"instock", "limitedavailability", "onlineonly", "preorder"}
 SCHEMA_OUT = {"outofstock", "soldout", "discontinued", "backorder"}
+OPEN_BOX_RE = re.compile(r"\bopen[\s-]+box\b", re.I)
+
+
+def is_open_box(value):
+    return bool(OPEN_BOX_RE.search(unescape(str(value or ""))))
+
+
+def iter_ldjson_products(text):
+    for block in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>',
+                            text, re.S | re.I):
+        try:
+            data = json.loads(block.strip())
+        except Exception:  # noqa: BLE001
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("@type")
+            if item_type == "Product" or (isinstance(item_type, list)
+                                           and "Product" in item_type):
+                yield item
+
+
+def page_is_open_box(text, url=""):
+    """Detect an open-box primary listing, not unrelated page recommendations."""
+    if is_open_box(url):
+        return True
+
+    for tag in re.findall(r"<meta\b[^>]*>", text, re.I):
+        attrs = dict(re.findall(r"([\w:-]+)\s*=\s*['\"](.*?)['\"]", tag, re.S))
+        if (attrs.get("property") or attrs.get("name")) in ("og:title", "title"):
+            if is_open_box(attrs.get("content")):
+                return True
+
+    title = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+    if title and is_open_box(title.group(1)):
+        return True
+
+    for item in iter_ldjson_products(text):
+        product_name = item.get("name") or ""
+        if (any(p in product_name.lower() for p in PRODUCT_PATTERNS)
+                and is_open_box(product_name)):
+            return True
+    return False
 
 
 def ldjson_availability(text):
@@ -160,24 +205,16 @@ def ldjson_availability(text):
     cuyo nombre matchea la PS5 Pro. Ignora menciones sueltas de schema.org
     en el JS de la pagina (esas dan falsos positivos)."""
     avails, price = set(), None
-    for block in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>',
-                            text, re.S):
-        try:
-            data = json.loads(block.strip())
-        except Exception:  # noqa: BLE001
+    for item in iter_ldjson_products(text):
+        name = (item.get("name") or "").lower()
+        if name and not any(p in name for p in PRODUCT_PATTERNS):
             continue
-        for item in (data if isinstance(data, list) else [data]):
-            if not isinstance(item, dict) or item.get("@type") not in ("Product", ["Product"]):
-                continue
-            name = (item.get("name") or "").lower()
-            if name and not any(p in name for p in PRODUCT_PATTERNS):
-                continue
-            offers = item.get("offers") or {}
-            for o in (offers if isinstance(offers, list) else [offers]):
-                a = (o.get("availability") or "").rsplit("/", 1)[-1].lower()
-                if a:
-                    avails.add(a)
-                    price = price or o.get("price")
+        offers = item.get("offers") or {}
+        for o in (offers if isinstance(offers, list) else [offers]):
+            a = (o.get("availability") or "").rsplit("/", 1)[-1].lower()
+            if a:
+                avails.add(a)
+                price = price or o.get("price")
     return avails, price
 
 
@@ -188,6 +225,8 @@ def check_one_html(name, url, out_extra=()):
             return result(name, url, UNKNOWN, url, f"bloqueado (HTTP {r.status_code})")
         if r.status_code >= 400:
             return result(name, url, UNKNOWN, url, f"HTTP {r.status_code}")
+        if page_is_open_box(r.text, getattr(r, "url", url)):
+            return result(name, url, OUT_OF_STOCK, url, "ignorado: oferta Open Box")
         body = r.text.lower()
 
         # Si la pagina ni menciona el producto es un muro anti-bot o un shell
@@ -232,6 +271,10 @@ def check_walmart(cfg):
     for url in cfg.get("urls", []):
         try:
             r = fetch(url)
+            if page_is_open_box(r.text, getattr(r, "url", url)):
+                results.append(result("Walmart", url, OUT_OF_STOCK, url,
+                                      "ignorado: oferta Open Box"))
+                continue
             m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
             if r.status_code == 200 and m:
                 data = json.loads(m.group(1))
@@ -240,6 +283,10 @@ def check_walmart(cfg):
                 status_raw = (prod.get("availabilityStatus") or "").upper()
                 name = prod.get("name") or url
                 price = ((prod.get("priceInfo") or {}).get("currentPrice") or {}).get("priceString", "")
+                if is_open_box(name):
+                    results.append(result("Walmart", name, OUT_OF_STOCK, url,
+                                          "ignorado: oferta Open Box"))
+                    continue
                 if status_raw:
                     status = IN_STOCK if status_raw == "IN_STOCK" else OUT_OF_STOCK
                     detail = f"availabilityStatus={status_raw}" + (f", {price}" if price else "")
@@ -269,8 +316,12 @@ def check_newegg(cfg):
             if instock is None:
                 results.append(result("Newegg", item, UNKNOWN, page, "API sin campo Instock"))
                 continue
-            results.append(result("Newegg", main.get("Title") or item,
-                                  IN_STOCK if instock else OUT_OF_STOCK,
+            title = main.get("Title") or item
+            if is_open_box(title):
+                results.append(result("Newegg", title, OUT_OF_STOCK, page,
+                                      "ignorado: oferta Open Box"))
+                continue
+            results.append(result("Newegg", title, IN_STOCK if instock else OUT_OF_STOCK,
                                   page, f"Instock={instock}"))
         except Exception as e:  # noqa: BLE001
             results.append(result("Newegg", item, UNKNOWN, page, f"error: {str(e)[:120]}"))
